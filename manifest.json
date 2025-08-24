@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Bubble Tab Manager",
+  "version": "1.0.0",
+  "description": "Smart tab titles and auto-grouping for Bubble editor and preview tabs",
+  
+  "permissions": [
+    "tabs",
+    "tabGroups", 
+    "storage",
+    "scripting",
+    "contextMenus"
+  ],
+  
+  "host_permissions": [
+    "*://*/*"
+  ],
+  
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  
+  "content_scripts": [
+    {
+      "matches": [
+        "https://bubble.io/page*",
+        "https://*.bubble.is/page*"
+      ],
+      "js": ["content-editor.js"],
+      "run_at": "document_start"
+    }
+  ],
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png", 
+    "128": "icons/icon128.png"
+  }
+}
