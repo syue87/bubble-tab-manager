@@ -42,26 +42,18 @@ export default defineConfig(({ mode }) => {
     };
   }
   
-  // Default build - just copy files using a dummy entry
+  // Default build - create a minimal dummy entry
   return {
     build: {
       outDir: 'dist',
       emptyOutDir: false,
       rollupOptions: {
-        input: resolve(__dirname, 'manifest.json'), // Use manifest as dummy entry
+        input: {
+          dummy: resolve(__dirname, 'src/types/env.d.ts'), // Use a simple TS file as entry
+        },
         output: {
           entryFileNames: 'dummy.js',
         },
-        plugins: [
-          {
-            name: 'ignore-entry',
-            load(id) {
-              if (id.includes('manifest.json')) {
-                return 'export {}'; // Return empty module
-              }
-            }
-          }
-        ]
       },
     },
     plugins: [
@@ -74,6 +66,7 @@ export default defineConfig(({ mode }) => {
           // Copy icons
           mkdirSync('dist/icons', { recursive: true });
           copyFileSync('icons/icon16.png', 'dist/icons/icon16.png');
+          copyFileSync('icons/icon32.png', 'dist/icons/icon32.png');
           copyFileSync('icons/icon48.png', 'dist/icons/icon48.png');
           copyFileSync('icons/icon128.png', 'dist/icons/icon128.png');
           
