@@ -1,5 +1,3 @@
-import { TIMING } from '../lib/constants';
-
 interface ScrapeResult {
   branchName: string | null;
   timestamp: number;
@@ -16,22 +14,6 @@ let cachedContainers: Element[] | null = null;
 let cacheTimestamp = 0;
 const CACHE_TTL = 5000; // 5 seconds
 
-/**
- * Get parent chain for debugging
- */
-function getParentChain(element: Element): string[] {
-  const chain: string[] = [];
-  let current = element.parentElement;
-  let depth = 0;
-  
-  while (current && depth < 10) { // Limit depth to prevent infinite loops
-    chain.push(`${current.tagName}${current.className ? '.' + current.className.split(' ').join('.') : ''}${current.id ? '#' + current.id : ''}`);
-    current = current.parentElement;
-    depth++;
-  }
-  
-  return chain;
-}
 
 /**
  * Get cached container elements or query and cache them

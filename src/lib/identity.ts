@@ -98,7 +98,6 @@ export function parsePreviewIdentity(url: string): PreviewIdentity | null {
 async function findAppByHostname(hostname: string): Promise<string | null> {
   try {
     const apps = await storage.getApps();
-    const appCount = Object.keys(apps).length;
     
     for (const app of Object.values(apps)) {
       if (app.baseUrls && app.baseUrls.includes(hostname)) {
@@ -124,16 +123,13 @@ async function findAppByHostname(hostname: string): Promise<string | null> {
 async function findExistingAppForVersion(versionId: string): Promise<string | null> {
   try {
     const branches = await storage.getBranches();
-    const branchCount = Object.keys(branches).length;
     
     // Search through all branches to find one with matching versionId
-    for (const [key, branch] of Object.entries(branches)) {
+    for (const branch of Object.values(branches)) {
       if (branch.versionId === versionId) {
         return branch.appId;
       }
     }
-    
-    const availableVersions = Object.values(branches).map(b => b.versionId);
     return null;
   } catch (error) {
     // Log storage error but don't break custom domain detection

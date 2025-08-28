@@ -121,6 +121,10 @@ npm run build
 - Ensure you have 2+ tabs for the same app/version
 - Check that tabs aren't pinned (pinned tabs are never grouped)
 
+**Tab moved to duplicate group after refresh/navigation?**
+- This was a known issue that has been fixed in recent versions
+- If you still experience this, try refreshing all tabs in the affected group
+
 **Custom domain not working?**
 - Add `?debug_mode=true` to your URL
 - Ensure URL contains `/version-xxx` path segment  

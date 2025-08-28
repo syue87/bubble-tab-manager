@@ -1,5 +1,5 @@
 import { parseAndComputeTitle } from '../lib/url-parser';
-import { attemptWithRetries, setupVisibilityListener, cleanup as cleanupScraper, debugPageStructure } from './scraper';
+import { attemptWithRetries, setupVisibilityListener, debugPageStructure } from './scraper';
 import { logger, LogCategory } from '../lib/logger';
 import { parseTabIdentitySync, isEditorUrl, isPreviewUrl } from '../lib/identity';
 
@@ -20,8 +20,8 @@ interface BranchMetadata {
 }
 
 let currentFaviconSvg: string | null = null;
-let iconCache: Map<string, CachedIconData> = new Map();
-let branchMetadata: Map<string, BranchMetadata> = new Map(); // Store branch metadata
+const iconCache: Map<string, CachedIconData> = new Map();
+const branchMetadata: Map<string, BranchMetadata> = new Map(); // Store branch metadata
 let cacheInitialized = false;
 
 function getCurrentAppContext(): { appId?: string; version?: string } {
@@ -68,10 +68,6 @@ function generateBranchKey(appId?: string, version?: string): string {
   return parts.join('::');
 }
 
-function getBranchMetadata(appId?: string, version?: string): BranchMetadata | null {
-  const branchKey = generateBranchKey(appId, version);
-  return branchMetadata.get(branchKey) || null;
-}
 
 
 async function getChromeGroupColorForCurrentBranch(): Promise<string | null> {
@@ -110,16 +106,6 @@ async function getChromeGroupColorForCurrentBranch(): Promise<string | null> {
 }
 
 
-// Available Chrome group colors
-const CHROME_GROUP_COLORS = [
-  'grey', 'red', 'yellow', 'green', 'blue', 'purple', 'cyan', 'pink'
-] as const;
-
-// Reserved colors for specific branch types
-const RESERVED_COLORS = {
-  'test': 'blue',
-  'live': 'green'
-} as const;
 
 
 

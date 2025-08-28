@@ -91,7 +91,8 @@ class GroupingEngine {
           if (tab && !tab.pinned && !this.hasManualHold(entry.tabId, entry.appId, entry.versionId)) {
             appVersionMap.get(key)!.push(tab);
           }
-        } catch (error) {
+        } catch {
+          // Tab no longer exists, skip
         }
       }
 
@@ -231,10 +232,16 @@ class GroupingEngine {
    */
   private async updateGroupProperties(groupId: number, bucket: TabBucket): Promise<void> {
     try {
-      // Check if group still exists
-      const group = await this.checkGroupExists(groupId, bucket.key);
-      if (!group) {
-        return; // Group was deleted, mapping cleaned up by checkGroupExists
+      // Get group for property updates
+      let group;
+      try {
+        group = await chrome.tabGroups.get(groupId);
+      } catch (error) {
+        logger.debug(LogCategory.GROUP, 'Could not access group for property updates', {
+          groupId,
+          error: getErrorMessage(error)
+        });
+        return;
       }
       
       // Compute title and get stored color
@@ -423,7 +430,7 @@ class GroupingEngine {
   private async cleanupEmptyGroups(): Promise<void> {
     const groupsToDelete: number[] = [];
 
-    for (const [groupId, mapping] of this.groupMappings) {
+    for (const [groupId] of this.groupMappings) {
       try {
         // Only clean up groups we created
         const isOurs = await storage.isExtensionGroup(groupId);
@@ -856,25 +863,6 @@ class GroupingEngine {
     // Safe no-op in production
   }
 
-  /**
-   * Check if a group exists and clean up mapping if it doesn't
-   */
-  private async checkGroupExists(groupId: number, bucketKey?: string): Promise<chrome.tabGroups.TabGroup | null> {
-    try {
-      return await chrome.tabGroups.get(groupId);
-    } catch (error) {
-      const errorMsg = getErrorMessage(error);
-      if (errorMsg.includes('No group with id') || errorMsg.includes('not found')) {
-        // Clean up our mappings
-        this.groupMappings.delete(groupId);
-        await storage.removeExtensionGroup(groupId);
-        return null;
-      }
-      
-      // Re-throw other errors
-      throw error;
-    }
-  }
 
   /**
    * Retry tab operations with exponential backoff for Chrome API limitations

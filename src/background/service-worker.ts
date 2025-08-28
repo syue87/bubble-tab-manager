@@ -167,9 +167,6 @@ async function validateTabGroupForBaseUrl(tabId: number, appId: string, versionI
       return false;
     }
 
-    // Get the group information
-    const group = await chrome.tabGroups.get(tab.groupId);
-    
     // Check if this group belongs to the same app/version via grouping engine
     const groupMapping: GroupMapping | undefined = groupingEngine.getGroupMapping(tab.groupId);
     
@@ -494,7 +491,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   await updateContextMenus(activeInfo.tabId);
 });
 
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+chrome.tabs.onRemoved.addListener((tabId, _removeInfo) => {
   // Clean up tab from registry
   groupRegistry.removeTab(tabId);
   
@@ -555,7 +552,7 @@ chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
   }
 });
 
-chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+chrome.tabs.onDetached.addListener((tabId, _detachInfo) => {
   // Remove from old location (will be re-added on attach)
   groupRegistry.removeTab(tabId);
   
@@ -563,7 +560,7 @@ chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
   groupingEngine.debouncedPlan('tab-detached');
 });
 
-chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
+chrome.tabs.onMoved.addListener(async (tabId, _moveInfo) => {
   // Handle manual tab move - create hold if it was moved out of a group
   const identity = groupRegistry.getIdentity(tabId);
   if (identity) {
@@ -574,7 +571,7 @@ chrome.tabs.onMoved.addListener(async (tabId, moveInfo) => {
 /**
  * Tab group lifecycle events
  */
-chrome.tabGroups.onCreated.addListener((group) => {
+chrome.tabGroups.onCreated.addListener((_group) => {
   // Group created
 });
 
@@ -992,8 +989,6 @@ async function updateContextMenus(tabId: number) {
     // This includes bubbleapps.io domains and validated custom domains
     const isPreview = identity?.type === 'preview';
     
-    // Check if it's a Bubble-related page at all
-    const isBubblePage = identity !== null;
     
     
     // Update debug_mode toggle - only show on preview tabs
