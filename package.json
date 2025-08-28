@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "vite build --mode production",
+    "build": "npm run build:prepare && npm run build:service-worker && npm run build:content-editor && npm run build:main-world",
+    "build:prepare": "vite build --mode production",
+    "build:service-worker": "VITE_ENTRY=service-worker vite build --mode production",
+    "build:content-editor": "VITE_ENTRY=content-editor vite build --mode production", 
+    "build:main-world": "VITE_ENTRY=main-world vite build --mode production",
     "pack": "npm run build && cd dist && zip -r ../bubble-tab-manager.zip .",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write 'src/**/*.{ts,json}'"
