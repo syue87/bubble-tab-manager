@@ -2,7 +2,7 @@ import { logger, LogCategory, getErrorMessage } from '../lib/logger';
 import { storage } from '../lib/storage';
 import { parseTabIdentity, parseTabIdentitySync, isEditorUrl, type TabIdentity } from '../lib/identity';
 import { groupRegistry, lastActiveCache } from './registry';
-import { groupingEngine, type GroupMapping } from './grouping';
+import { groupingEngine } from './grouping';
 import { scrapeCoordinator } from './scrape-coordinator';
 import { lastActiveCache as identityLastActiveCache } from '../lib/last-active-cache';
 import { cleanupManager } from '../lib/cleanup-manager';
@@ -45,7 +45,6 @@ async function initialize(): Promise<void> {
     await storage.initialize();
     await registerMainWorldScript();
     await scanExistingTabs();
-    await groupingEngine.recoverGroupMappings();
     
     const groupingEnabled = await storage.isGroupingEnabled();
     if (groupingEnabled) {
@@ -167,17 +166,16 @@ async function validateTabGroupForBaseUrl(tabId: number, appId: string, versionI
       return false;
     }
 
-    // Check if this group belongs to the same app/version via grouping engine
-    const groupMapping: GroupMapping | undefined = groupingEngine.getGroupMapping(tab.groupId);
-    
-    if (!groupMapping) {
-      return false;
+    // Check if this group belongs to the same app/version using direct Chrome API queries
+    const tabs = await chrome.tabs.query({ groupId: tab.groupId });
+    for (const groupTab of tabs) {
+      const identity = groupRegistry.getIdentity(groupTab.id!);
+      if (identity && identity.appId === appId && identity.versionId === versionId) {
+        return true;
+      }
     }
-
-    // Validate that the group mapping matches the expected app/version
-    const isValidGroup = groupMapping.appId === appId && groupMapping.versionId === versionId;
     
-    return isValidGroup;
+    return false;
   } catch (error) {
     return false; // Fail safe - don't add baseUrl if we can't validate
   }
@@ -357,6 +355,15 @@ async function isRecognizedCustomDomain(hostname: string): Promise<boolean> {
 }
 
 /**
+ * Check if branch timestamp should be updated (prevents race conditions)
+ */
+function shouldUpdateBranchTimestamp(lastUpdated?: number, isNavigation = false): boolean {
+  if (!lastUpdated) return true; // Never updated, should update
+  if (isNavigation) return Date.now() - lastUpdated > 5000; // 5 seconds for navigation events
+  return Date.now() - lastUpdated > 30000; // 30 seconds for other updates
+}
+
+/**
  * Update branch storage with flexible custom domain logic
  */
 async function updateBranchStorage(identity: TabIdentity) {
@@ -390,8 +397,9 @@ async function updateBranchStorage(identity: TabIdentity) {
       
       // Assign color for new branch
       await groupingEngine.assignColorForNewBranch(appId, versionId);
-    } else {
-      // Update existing branch timestamp
+    } else if (shouldUpdateBranchTimestamp(branch.updatedAt, true)) {
+      // Smart update: allow more frequent updates for navigation events (5s vs 30s)
+      // This ensures scraping works on page reloads while preventing race conditions
       await storage.setBranch(appId, versionId, {
         updatedAt: Date.now()
       });
@@ -457,16 +465,37 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       // Process tab identity
       if (tab.windowId !== undefined) {
         const oldIdentity = groupRegistry.getIdentity(tabId);
-        await processTabIdentity(tabId, tab.windowId, url);
+        // Parse new identity WITHOUT updating registry yet
+        const newIdentity = await parseTabIdentity(url);
         
-        const newIdentity = groupRegistry.getIdentity(tabId);
         if (oldIdentity && newIdentity && 
             (oldIdentity.appId !== newIdentity.appId || oldIdentity.versionId !== newIdentity.versionId)) {
-          groupingEngine.handleTabIdentityChange(tabId, newIdentity.appId, newIdentity.versionId);
-        }
-        
-        if (newIdentity) {
-          groupingEngine.debouncedPlan('tab-updated');
+          // Handle identity change FIRST (moves tab physically)
+          await groupingEngine.handleTabIdentityChange(tabId, newIdentity.appId, newIdentity.versionId);
+          // Update registry AFTER physical movement succeeds
+          groupRegistry.setTabIdentity(tabId, tab.windowId, newIdentity, url);
+          // Update storage and trigger scraping for new identity
+          await updateAppStorage(newIdentity);
+          await updateBranchStorage(newIdentity);
+          
+          // Trigger scraping for new editor identities (always true for identity changes)
+          if (newIdentity.type === 'editor') {
+            try {
+              await scrapeCoordinator.handleNewIdentity(newIdentity.appId, newIdentity.versionId);
+            } catch (error) {
+              logger.error(LogCategory.SCRAPE, 'Failed to handle identity change for scraping', {
+                appId: newIdentity.appId,
+                versionId: newIdentity.versionId,
+                error: getErrorMessage(error)
+              });
+            }
+          }
+        } else {
+          // No identity change - normal processing (updates registry immediately)
+          await processTabIdentity(tabId, tab.windowId, url);
+          if (newIdentity) {
+            groupingEngine.debouncedPlan('tab-updated');
+          }
         }
       }
       
@@ -737,10 +766,6 @@ async function handleDebugMessage(message: any, sender: chrome.runtime.MessageSe
         lastActive: lastActiveCache.getAll()
       };
       
-    case 'DUMP_GROUPING':
-      groupingEngine.dumpState();
-      return { success: true, message: 'Grouping state dumped to console' };
-      
     case 'FORCE_REGROUP':
       await groupingEngine.planAndExecuteGrouping('manual-debug');
       return { success: true, message: 'Regrouping executed' };
@@ -832,16 +857,21 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
         
       case 'BRANCH_GROUP_COLOR':
         try {
-          if (sender.tab?.id && message.groupColor) {
-            await groupingEngine.setBranchColor(sender.tab.id, message.groupColor);
+          if (message.appId && message.version && message.groupColor) {
+            // Store color for identity
+            await storage.setBranch(message.appId, message.version, { 
+              color: message.groupColor 
+            });
+            
+            // Apply to existing groups with this identity
+            await groupingEngine.refreshTitlesForIdentity(message.appId, message.version);
             response = { success: true };
           } else {
-            response = { success: false, error: 'Missing tabId or groupColor' };
+            response = { success: false, error: 'Missing appId, version, or groupColor' };
           }
         } catch (error) {
           const errorMessage = getErrorMessage(error);
           logger.error(LogCategory.MESSAGE, 'Failed to set branch group color', {
-            tabId: sender.tab?.id,
             appId: message.appId,
             version: message.version,
             color: message.groupColor,

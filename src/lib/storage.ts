@@ -38,6 +38,7 @@ export interface StorageSchema {
 
 class Storage {
   private readonly SCHEMA_VERSION = 1;
+  private writeQueue = new Map<string, Promise<void>>();
 
   /**
    * Initialize storage with default schema if empty
@@ -138,15 +139,39 @@ class Storage {
    * Update or create branch data
    */
   async setBranch(appId: string, versionId: string, data: Partial<BranchData>): Promise<void> {
+    const key = `${appId}:${versionId}`;
+    
+    // If there's already a write in progress for this branch, wait for it
+    if (this.writeQueue.has(key)) {
+      await this.writeQueue.get(key);
+    }
+    
+    // Start our write operation
+    const writePromise = this.doSetBranch(appId, versionId, data);
+    this.writeQueue.set(key, writePromise);
+    
+    try {
+      await writePromise;
+    } finally {
+      this.writeQueue.delete(key);
+    }
+  }
+
+  private async doSetBranch(appId: string, versionId: string, data: Partial<BranchData>): Promise<void> {
     const branches = await this.getBranches();
     const key = `${appId}:${versionId}`;
-    branches[key] = {
-      ...branches[key],
+    const existing = branches[key];
+    
+    // Preserve existing data
+    const merged = {
+      ...existing,
       ...data,
       appId,
       versionId,
       updatedAt: Date.now(),
     };
+    
+    branches[key] = merged;
     await chrome.storage.local.set({ branches });
     logger.debug(LogCategory.STORAGE, 'Branch updated', { appId, versionId });
   }

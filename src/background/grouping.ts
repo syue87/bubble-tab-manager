@@ -14,19 +14,12 @@ interface ManualHold {
   heldAt: number;
 }
 
-export interface GroupMapping {
-  groupId: number;
-  windowId: number;
-  appId: string;
-  versionId: string;
-  createdAt: number;
-}
 
 class GroupingEngine {
   private manualHolds = new Map<number, ManualHold>(); // tabId → hold
-  private groupMappings = new Map<number, GroupMapping>(); // groupId → mapping
   private internalOps = new Set<string>(); // Track our own operations to avoid feedback loops
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private activeIdentityChanges = new Set<number>(); // tabId → prevent contamination during moves
 
   /**
    * Plan and execute grouping for all tabs in the registry
@@ -88,7 +81,9 @@ class GroupingEngine {
         // Get actual tab object
         try {
           const tab = await chrome.tabs.get(entry.tabId);
-          if (tab && !tab.pinned && !this.hasManualHold(entry.tabId, entry.appId, entry.versionId)) {
+          if (tab && !tab.pinned && 
+              !this.hasManualHold(entry.tabId, entry.appId, entry.versionId) &&
+              !this.activeIdentityChanges.has(entry.tabId)) {
             appVersionMap.get(key)!.push(tab);
           }
         } catch {
@@ -157,12 +152,9 @@ class GroupingEngine {
     });
 
     // Look for existing group with this identity
-    for (const [groupId, mapping] of this.groupMappings) {
-      if (mapping.windowId === bucket.windowId && 
-          mapping.appId === bucket.appId && 
-          mapping.versionId === bucket.versionId) {
-        return groupId;
-      }
+    const existingGroupId = await this.findGroupByIdentity(bucket.windowId, bucket.appId, bucket.versionId);
+    if (existingGroupId) {
+      return existingGroupId;
     }
 
     // Create new group
@@ -173,17 +165,20 @@ class GroupingEngine {
         tabIds: [bucket.tabs[0].id!],
       }));
 
-      // Store mapping
-      this.groupMappings.set(groupId, {
-        groupId: groupId,
-        windowId: bucket.windowId,
-        appId: bucket.appId,
-        versionId: bucket.versionId,
-        createdAt: Date.now()
-      });
-
       // Track that we created this group
       await storage.addExtensionGroup(groupId);
+
+      // Assign reserved colors for test/live
+      const reservedColor = this.getReservedColor(bucket.versionId);
+      if (reservedColor) {
+        await this.applyGroupUpdates(groupId, { color: reservedColor });
+        await this.persistBranchColor(bucket.appId, bucket.versionId, reservedColor);
+        logger.info(LogCategory.GROUP, 'Assigned reserved color to new group', {
+          groupId,
+          versionId: bucket.versionId,
+          color: reservedColor
+        });
+      }
 
       logger.info(LogCategory.GROUP, 'Created new group', { 
         groupId: groupId, 
@@ -202,7 +197,7 @@ class GroupingEngine {
   }
 
   /**
-   * Move tabs into their designated group
+   * Move tabs into their designated group (bulk grouping)
    */
   private async moveTabsToGroup(tabs: chrome.tabs.Tab[], groupId: number): Promise<void> {
     const tabsToMove = tabs.slice(1); // Skip first tab (already in group)
@@ -220,10 +215,37 @@ class GroupingEngine {
       }));
 
     } catch (error) {
-      this.logGroupError('Failed to move tabs to group', error, {
+      logger.error(LogCategory.GROUP, 'Failed to move tabs to group', {
         groupId,
-        tabCount: tabsToMove.length
+        tabCount: tabsToMove.length,
+        error: getErrorMessage(error)
       });
+    }
+  }
+
+  /**
+   * Move a single tab to a different group (identity changes)
+   */
+  private async moveSingleTabToGroup(tabId: number, targetGroupId: number): Promise<boolean> {
+    try {
+      this.markInternalOp(`move-single-tab-${Date.now()}`);
+      
+      await this.retryTabOperation(() => chrome.tabs.group({
+        tabIds: [tabId],
+        groupId: targetGroupId
+      }));
+
+      // Verify the move was successful
+      const tab = await chrome.tabs.get(tabId);
+      return tab.groupId === targetGroupId;
+
+    } catch (error) {
+      logger.error(LogCategory.GROUP, 'Failed to move single tab to group', {
+        tabId,
+        targetGroupId,
+        error: getErrorMessage(error)
+      });
+      return false;
     }
   }
 
@@ -247,19 +269,7 @@ class GroupingEngine {
       // Compute title and get stored color
       const title = await this.computeGroupTitle(bucket);
       const branch = await storage.getBranch(bucket.appId, bucket.versionId);
-      let color = branch?.color || null;
-      
-      // Capture Chrome's assigned color if no stored color
-      if (branch && !color && group.color) {
-        await this.persistBranchColor(bucket.appId, bucket.versionId, group.color);
-        color = group.color;
-        
-        logger.info(LogCategory.GROUP, 'Captured and stored Chrome-assigned color', {
-          appId: bucket.appId,
-          versionId: bucket.versionId,
-          color: group.color
-        });
-      }
+      const color = branch?.color || null;
       
       // Prepare updates
       const updates = this.prepareGroupUpdates(group, title, color);
@@ -270,9 +280,10 @@ class GroupingEngine {
       }
 
     } catch (error) {
-      this.logGroupError('Failed to update group properties', error, {
+      logger.error(LogCategory.GROUP, 'Failed to update group properties', {
         groupId,
-        bucket: bucket.key
+        bucket: bucket.key,
+        error: getErrorMessage(error)
       });
     }
   }
@@ -309,17 +320,14 @@ class GroupingEngine {
     await this.retryTabOperation(() => chrome.tabGroups.update(groupId, updates));
   }
 
-  private logGroupError(message: string, error: unknown, context: Record<string, any>): void {
-    logger.error(LogCategory.GROUP, message, { error: String(error), ...context });
-  }
 
   /**
    * Compute group title based on per-window naming policy
    */
-  private async computeGroupTitle(bucket: TabBucket): Promise<string> {
+  private async computeGroupTitle(bucket: TabBucket, includeDisplayName: boolean = true): Promise<string> {
     // Get version label with priority:
-    // 1. displayName (user override)
-    // 2. Test/Live for those specific versions
+    // 1. displayName (user override) - if includeDisplayName is true
+    // 2. Test/Live for reserved versions  
     // 3. name (scraped branch name)
     // 4. versionId (fallback)
     let versionLabel = bucket.versionId;
@@ -327,13 +335,15 @@ class GroupingEngine {
     try {
       const branch = await storage.getBranch(bucket.appId, bucket.versionId);
       
-      if (branch?.displayName) {
+      if (includeDisplayName && branch?.displayName) {
         // Always use user's displayName verbatim - don't add appId suffix
         return branch.displayName;
-      } else if (bucket.versionId === 'test') {
-        versionLabel = 'Test';
-      } else if (bucket.versionId === 'live') {
-        versionLabel = 'Live';
+      }
+      
+      // Check for reserved versions (test/live)
+      const reservedColor = this.getReservedColor(bucket.versionId);
+      if (reservedColor) {
+        versionLabel = bucket.versionId.charAt(0).toUpperCase() + bucket.versionId.slice(1);
       } else if (branch?.name) {
         // Use scraped branch name
         versionLabel = branch.name;
@@ -366,7 +376,6 @@ class GroupingEngine {
     return RESERVED_COLORS[versionId as keyof typeof RESERVED_COLORS] || null;
   }
 
-  // Using Chrome's automatic color assignment for simplicity
 
   /**
    * Assign and persist color for new branch (public method for service worker)
@@ -429,20 +438,15 @@ class GroupingEngine {
    */
   private async cleanupEmptyGroups(): Promise<void> {
     const groupsToDelete: number[] = [];
+    const extensionGroups = await storage.getExtensionGroups();
 
-    for (const [groupId] of this.groupMappings) {
+    for (const groupId of extensionGroups) {
       try {
-        // Only clean up groups we created
-        const isOurs = await storage.isExtensionGroup(groupId);
-        if (!isOurs) {
-          continue;
-        }
-        
         // Query tabs in this group
         const tabs = await chrome.tabs.query({ groupId: groupId });
         
         if (tabs.length === 0) {
-          groupsToDelete.push(groupId);
+          continue; // Preserve empty groups with their colors and user customizations
         }
         
       } catch (error) {
@@ -451,9 +455,9 @@ class GroupingEngine {
       }
     }
 
-    // Remove empty groups from mapping
+    // Remove non-existent groups from tracking
     for (const groupId of groupsToDelete) {
-      this.groupMappings.delete(groupId);
+      await storage.removeExtensionGroup(groupId);
     }
 
     if (groupsToDelete.length > 0) {
@@ -476,12 +480,71 @@ class GroupingEngine {
   }
 
   /**
-   * Handle tab identity change - release hold if version changed
+   * Handle tab identity change - release hold and move tab to correct group
    */
-  handleTabIdentityChange(tabId: number, newAppId: string, newVersionId: string): void {
+  async handleTabIdentityChange(tabId: number, newAppId: string, newVersionId: string): Promise<void> {
     const hold = this.manualHolds.get(tabId);
     if (hold && (hold.appId !== newAppId || hold.versionId !== newVersionId)) {
       this.manualHolds.delete(tabId);
+    }
+    
+    // Mark tab as having active identity change to prevent contamination
+    this.activeIdentityChanges.add(tabId);
+    
+    // Move tab to correct group for new identity
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab.windowId) return;
+      
+      const bucket = {
+        key: `${newAppId}:${newVersionId}`,
+        windowId: tab.windowId,
+        appId: newAppId,
+        versionId: newVersionId,
+        tabs: [tab]
+      };
+      
+      // Find or create target group for new identity  
+      const targetGroupId = await this.findOrCreateGroup(bucket);
+      
+      if (targetGroupId && tab.groupId !== targetGroupId) {
+        // Move tab to target group
+        const moveSuccess = await this.moveSingleTabToGroup(tabId, targetGroupId);
+        
+        if (moveSuccess) {
+          // Only refresh the target group to prevent source group contamination
+          await this.refreshTitlesForIdentity(newAppId, newVersionId, targetGroupId);
+          logger.info(LogCategory.GROUP, 'Tab successfully moved to correct group after identity change', {
+            tabId, 
+            newAppId, 
+            newVersionId,
+            fromGroupId: tab.groupId,
+            toGroupId: targetGroupId
+          });
+        } else {
+          logger.error(LogCategory.GROUP, 'Tab move failed - group properties not updated', {
+            tabId, 
+            newAppId, 
+            newVersionId,
+            targetGroupId
+          });
+        }
+      } else {
+        logger.debug(LogCategory.GROUP, 'No move needed for tab identity change', {
+          tabId,
+          newAppId,
+          newVersionId,
+          targetGroupId,
+          currentGroupId: tab.groupId
+        });
+      }
+    } catch (error) {
+      logger.error(LogCategory.GROUP, 'Failed to move tab after identity change', {
+        tabId, newAppId, newVersionId, error
+      });
+    } finally {
+      // Always clear the identity change flag
+      this.activeIdentityChanges.delete(tabId);
     }
   }
 
@@ -489,23 +552,23 @@ class GroupingEngine {
    * Handle user renaming a group - store as displayName only if it's truly a user rename
    */
   async handleUserGroupRename(groupId: number, newTitle: string): Promise<void> {
-    const mapping = this.groupMappings.get(groupId);
-    if (!mapping) {
+    const groupIdentity = await this.getGroupIdentity(groupId);
+    if (!groupIdentity) {
       return;
     }
 
     try {
       // Check if this title matches what we would generate automatically
       const bucket = {
-        windowId: mapping.windowId,
-        appId: mapping.appId,
-        versionId: mapping.versionId,
+        windowId: groupIdentity.windowId,
+        appId: groupIdentity.appId,
+        versionId: groupIdentity.versionId,
         tabs: [], // Not needed for title computation
-        key: `${mapping.appId}:${mapping.versionId}`
+        key: `${groupIdentity.appId}:${groupIdentity.versionId}`
       };
       
       // Compute what the automatic title would be (without displayName)
-      const automaticTitle = await this.computeAutomaticTitle(bucket);
+      const automaticTitle = await this.computeGroupTitle(bucket, false);
       
       // If the new title matches the automatic title, don't store it as displayName
       if (newTitle === automaticTitle) {
@@ -513,11 +576,11 @@ class GroupingEngine {
       }
       
       // This is a genuine user rename - store as displayName
-      let branch = await storage.getBranch(mapping.appId, mapping.versionId);
+      let branch = await storage.getBranch(groupIdentity.appId, groupIdentity.versionId);
       if (!branch) {
         branch = { 
-          appId: mapping.appId, 
-          versionId: mapping.versionId, 
+          appId: groupIdentity.appId, 
+          versionId: groupIdentity.versionId, 
           updatedAt: Date.now() 
         };
       }
@@ -525,12 +588,12 @@ class GroupingEngine {
       branch.displayName = newTitle;
       branch.updatedAt = Date.now();
       
-      await storage.setBranch(mapping.appId, mapping.versionId, branch);
+      await storage.setBranch(groupIdentity.appId, groupIdentity.versionId, branch);
       
       logger.info(LogCategory.GROUP, 'Stored user group rename as displayName', {
         groupId,
-        appId: mapping.appId,
-        versionId: mapping.versionId,
+        appId: groupIdentity.appId,
+        versionId: groupIdentity.versionId,
         displayName: newTitle,
         automaticTitle
       });
@@ -548,38 +611,35 @@ class GroupingEngine {
    * Handle user changing a group color - persist to storage
    */
   async handleUserGroupColorChange(groupId: number, newColor: chrome.tabGroups.ColorEnum): Promise<void> {
-    const mapping = this.groupMappings.get(groupId);
-    if (!mapping) {
+    const groupIdentity = await this.getGroupIdentity(groupId);
+    if (!groupIdentity) {
       return;
     }
 
     try {
       // Get current color before updating
-      const currentBranch = await storage.getBranch(mapping.appId, mapping.versionId);
+      const currentBranch = await storage.getBranch(groupIdentity.appId, groupIdentity.versionId);
       const oldColor = currentBranch?.color;
       
       // Check if this is a reserved color that shouldn't be overridden
-      const reservedColor = this.getReservedColor(mapping.versionId);
+      const reservedColor = this.getReservedColor(groupIdentity.versionId);
       if (reservedColor && newColor !== reservedColor) {
         logger.info(LogCategory.GROUP, 'User changed color for reserved version', {
           groupId,
-          versionId: mapping.versionId,
+          versionId: groupIdentity.versionId,
           reservedColor,
           userColor: newColor,
-          appId: mapping.appId
+          appId: groupIdentity.appId
         });
       }
 
       // Always persist user color choice
-      await this.persistBranchColor(mapping.appId, mapping.versionId, newColor);
+      await this.persistBranchColor(groupIdentity.appId, groupIdentity.versionId, newColor);
       
-      // Apply color to same-identity groups in all windows for consistency
-      await this.refreshTitlesForIdentity(mapping.appId, mapping.versionId);
-      
-      logger.info(LogCategory.GROUP, 'User group color change persisted and applied across windows', {
+      logger.info(LogCategory.GROUP, 'User group color change persisted', {
         groupId,
-        appId: mapping.appId,
-        versionId: mapping.versionId,
+        appId: groupIdentity.appId,
+        versionId: groupIdentity.versionId,
         oldColor: oldColor || 'none',
         newColor
       });
@@ -593,90 +653,13 @@ class GroupingEngine {
     }
   }
 
-  /**
-   * Set Chrome tab group color for a specific tab's branch
-   */
-  async setBranchColor(tabId: number, color: chrome.tabGroups.ColorEnum): Promise<void> {
-    try {
-      // Get the tab and its identity
-      const tab = await chrome.tabs.get(tabId);
-      if (!tab.groupId || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
-        return;
-      }
-
-      // Get the mapping for this group
-      const mapping = this.groupMappings.get(tab.groupId);
-      if (!mapping) {
-        return;
-      }
-
-      // Update the group color
-      await chrome.tabGroups.update(tab.groupId, { color });
-      
-      // Persist the color for this branch
-      await this.persistBranchColor(mapping.appId, mapping.versionId, color);
-      
-      // Apply color to same-identity groups in all windows for consistency
-      await this.refreshTitlesForIdentity(mapping.appId, mapping.versionId);
-      
-      logger.info(LogCategory.GROUP, 'Branch color set successfully', {
-        tabId,
-        groupId: tab.groupId,
-        appId: mapping.appId,
-        versionId: mapping.versionId,
-        color
-      });
-      
-    } catch (error) {
-      logger.error(LogCategory.GROUP, 'Failed to set branch color', {
-        tabId,
-        color,
-        error: getErrorMessage(error)
-      });
-      throw error;
-    }
-  }
-  
-  /**
-   * Compute what the automatic title would be (ignoring displayName)
-   */
-  private async computeAutomaticTitle(bucket: TabBucket): Promise<string> {
-    let versionLabel = bucket.versionId;
-    
-    try {
-      const branch = await storage.getBranch(bucket.appId, bucket.versionId);
-      
-      // Use automatic title priority (ignore displayName):
-      // 1. Test/Live for those specific versions
-      // 2. name (scraped branch name)
-      // 3. versionId (fallback)
-      if (bucket.versionId === 'test') {
-        versionLabel = 'Test';
-      } else if (bucket.versionId === 'live') {
-        versionLabel = 'Live';
-      } else if (branch?.name) {
-        versionLabel = branch.name;
-      }
-    } catch (error) {
-      // Use versionId as fallback
-    }
-    
-    // Apply per-window naming policy
-    const isMultiApp = await this.isMultiAppWindow(bucket.windowId);
-    return isMultiApp ? `${versionLabel} | ${bucket.appId}` : versionLabel;
-  }
 
   /**
-   * Handle group removal - clean up mapping and tracking
+   * Handle group removal - clean up tracking
    */
   async handleGroupRemoval(groupId: number): Promise<void> {
-    const mapping = this.groupMappings.get(groupId);
-    if (mapping) {
-      this.groupMappings.delete(groupId);
-      
-      // Remove from extension groups tracking
-      await storage.removeExtensionGroup(groupId);
-    }
+    // Remove from extension groups tracking
+    await storage.removeExtensionGroup(groupId);
   }
 
   /**
@@ -709,12 +692,20 @@ class GroupingEngine {
    * Refresh titles for a specific identity without moving tabs
    * Used when branch names are scraped/updated
    */
-  async refreshTitlesForIdentity(appId: string, versionId: string): Promise<void> {
-    // Find all groups with this identity
+  async refreshTitlesForIdentity(appId: string, versionId: string, targetGroupId?: number): Promise<void> {
+    // Find all groups with this identity using direct Chrome API queries
+    const allGroups = await chrome.tabGroups.query({});
     const groupsToUpdate: number[] = [];
-    for (const [groupId, mapping] of this.groupMappings) {
-      if (mapping.appId === appId && mapping.versionId === versionId) {
-        groupsToUpdate.push(groupId);
+    
+    for (const group of allGroups) {
+      // If targetGroupId specified, only update that specific group
+      if (targetGroupId && group.id !== targetGroupId) {
+        continue;
+      }
+      
+      const identity = await this.getGroupIdentity(group.id);
+      if (identity?.appId === appId && identity?.versionId === versionId) {
+        groupsToUpdate.push(group.id);
       }
     }
 
@@ -724,8 +715,8 @@ class GroupingEngine {
 
     // Update each group's title
     for (const groupId of groupsToUpdate) {
-      const mapping = this.groupMappings.get(groupId);
-      if (!mapping) continue;
+      const identity = await this.getGroupIdentity(groupId);
+      if (!identity) continue;
 
       // Get tabs in this group to determine title
       const tabs = await chrome.tabs.query({ groupId });
@@ -733,17 +724,18 @@ class GroupingEngine {
 
       // Create a bucket for title computation
       const bucket: TabBucket = {
-        windowId: mapping.windowId,
-        appId: mapping.appId,
-        versionId: mapping.versionId,
+        windowId: identity.windowId,
+        appId: identity.appId,
+        versionId: identity.versionId,
         tabs,
-        key: `${mapping.windowId}:${mapping.appId}:${mapping.versionId}`
+        key: `${identity.appId}:${identity.versionId}`
       };
 
       // Update group properties (title only, no color change)
       await this.updateGroupProperties(groupId, bucket);
     }
   }
+
 
   /**
    * Debounced planning - coalesce rapid events
@@ -759,89 +751,45 @@ class GroupingEngine {
     }, delayMs);
   }
 
+
+
   /**
-   * Startup recovery - rebuild group mappings from current tabs
+   * Find existing group by identity using direct Chrome API queries
    */
-  async recoverGroupMappings(): Promise<void> {
-    logger.info(LogCategory.GROUP, 'Starting group mapping recovery');
+  private async findGroupByIdentity(windowId: number, appId: string, versionId: string): Promise<number | null> {
+    const groups = await chrome.tabGroups.query({ windowId });
     
-    try {
-      // Clear existing mappings
-      this.groupMappings.clear();
-      
-      // Get all tab groups
-      const allGroups = await chrome.tabGroups.query({});
-      
-      // Get list of groups we created
-      const ourGroups = await storage.getExtensionGroups();
-      
-      for (const group of allGroups) {
-        // Only recover groups we created
-        if (!ourGroups.includes(group.id)) {
-          continue;
-        }
-        
-        // Get tabs in this group
-        const tabs = await chrome.tabs.query({ groupId: group.id });
-        
-        if (tabs.length === 0) {
-          continue;
-        }
-
-        // Determine group identity by consensus of contained tabs
-        const identities = new Map<string, number>(); // identity → count
-        
-        for (const tab of tabs) {
-          if (tab.url) {
-            const identity = groupRegistry.getIdentity(tab.id!);
-            if (identity) {
-              const key = `${identity.appId}:${identity.versionId}`;
-              identities.set(key, (identities.get(key) || 0) + 1);
-            }
-          }
-        }
-
-        // Use majority identity for this group
-        let maxCount = 0;
-        let groupIdentity: string | null = null;
-        
-        for (const [identity, count] of identities) {
-          if (count > maxCount) {
-            maxCount = count;
-            groupIdentity = identity;
-          }
-        }
-
-        if (groupIdentity) {
-          const [appId, versionId] = groupIdentity.split(':');
-          this.groupMappings.set(group.id, {
-            groupId: group.id,
-            windowId: group.windowId,
-            appId,
-            versionId,
-            createdAt: Date.now()
-          });
-        }
+    for (const group of groups) {
+      const identity = await this.getGroupIdentity(group.id);
+      if (identity?.appId === appId && identity?.versionId === versionId) {
+        return group.id;
       }
-
-      logger.info(LogCategory.GROUP, 'Group mapping recovery complete', {
-        recoveredGroups: this.groupMappings.size
-      });
-
-    } catch (error) {
-      logger.error(LogCategory.GROUP, 'Group mapping recovery failed', {
-        error: getErrorMessage(error),
-        errorStack: error instanceof Error ? error.stack : undefined
-      });
     }
+    return null;
   }
 
+
   /**
-   * Get group mapping for a specific group ID
-   * Used for validating tab group membership
+   * Get group identity for a specific group ID using direct Chrome API queries
    */
-  getGroupMapping(groupId: number): GroupMapping | undefined {
-    return this.groupMappings.get(groupId);
+  private async getGroupIdentity(groupId: number): Promise<{appId: string, versionId: string, windowId: number} | null> {
+    const tabs = await chrome.tabs.query({ groupId });
+    for (const tab of tabs) {
+      // Skip tabs that are currently changing identity to prevent contamination
+      if (this.activeIdentityChanges.has(tab.id!)) {
+        continue;
+      }
+      
+      const identity = groupRegistry.getIdentity(tab.id!);
+      if (identity) {
+        return {
+          appId: identity.appId,
+          versionId: identity.versionId,
+          windowId: tab.windowId!
+        };
+      }
+    }
+    return null;
   }
 
   /**
@@ -849,19 +797,12 @@ class GroupingEngine {
    */
   getStats() {
     return {
-      groupMappings: this.groupMappings.size,
       manualHolds: this.manualHolds.size,
       internalOps: this.internalOps.size,
       debounceActive: this.debounceTimer !== null
     };
   }
 
-  /**
-   * Dump current state for debugging
-   */
-  dumpState(): void {
-    // Safe no-op in production
-  }
 
 
   /**
