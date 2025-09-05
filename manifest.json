@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Bubble Tab Manager",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Smart tab titles and auto-grouping for Bubble editor and preview tabs",
   
   "permissions": [
     "tabs",
     "tabGroups", 
     "storage",
-    "activeTab",
     "contextMenus"
   ],
   

@@ -8,13 +8,13 @@ Smart tab organization and management for Bubble.io development workflow.
 - Groups tabs by app and version across editor and preview pages
 - Intelligent per-window naming (single-app vs multi-app)
 - Respects pinned tabs and manual user moves
-- **NEW in v1.2.0**: Enhanced persistence survives browser idle and service worker suspension
+- **NEW in v1.2.1**: Enhanced persistence survives browser idle and service worker suspension
 
 ### 🏷️ **Smart Tab Titles** 
 - Automatically scrapes branch names from Bubble editor
 - Consistent editor tab titles with app name display
 - Dynamic favicons reflecting current editor section (Design 🎨, Workflow 🔄, Data 📊)
-- **IMPROVED in v1.2.0**: Faster branch name detection with real-time URL change monitoring
+- **IMPROVED in v1.2.1**: Faster branch name detection with real-time URL change monitoring
 
 ### 🎨 **Intelligent Color Management**
 - Reserved colors: Test (blue), Live (green)
@@ -24,7 +24,7 @@ Smart tab organization and management for Bubble.io development workflow.
 ### 💾 **Persistent Settings**
 - Remembers group names, colors, and preferences  
 - Survives browser restarts and extension updates
-- **ENHANCED in v1.2.0**: Robust recovery from service worker suspension
+- **ENHANCED in v1.2.1**: Robust recovery from service worker suspension
 
 ### 🌐 **Custom Domain Support**
 - Groups preview tabs on your own domains
@@ -125,7 +125,7 @@ npm run build
 - Check that tabs aren't pinned (pinned tabs are never grouped)
 
 **Color or title changes unexpectedly?**
-- This issue has been resolved in v1.2.0
+- This issue has been resolved in v1.2.1
 - Groups now maintain stable colors and titles during branch switches
 - Enhanced persistence layer prevents data loss after browser idle
 
@@ -148,6 +148,20 @@ chrome.runtime.sendMessage({type: 'GET_REGISTRY_INFO'}, console.log)
 // Check custom domain detection
 chrome.runtime.sendMessage({type: 'GET_CUSTOM_DOMAIN_STATUS'}, console.log)
 ```
+
+## 📋 Changelog
+
+### v1.2.1
+- **OPTIMIZATION**: Removed unnecessary `activeTab` permission for cleaner Chrome Web Store submission
+- **STREAMLINED**: Extension now uses minimal required permissions only
+- **IMPROVED**: Optimized for Chrome Web Store review process
+
+### v1.2.0  
+- **NEW**: Enhanced persistence layer survives browser idle and service worker suspension
+- **IMPROVED**: Faster branch name detection with real-time URL change monitoring
+- **ENHANCED**: Robust recovery from service worker suspension
+- **FIXED**: Context menu initialization issues
+- **OPTIMIZATION**: Comprehensive code cleanup and performance improvements
 
 ## 📝 License
 
