@@ -8,11 +8,13 @@ Smart tab organization and management for Bubble.io development workflow.
 - Groups tabs by app and version across editor and preview pages
 - Intelligent per-window naming (single-app vs multi-app)
 - Respects pinned tabs and manual user moves
+- **NEW in v1.2.0**: Enhanced persistence survives browser idle and service worker suspension
 
 ### 🏷️ **Smart Tab Titles** 
 - Automatically scrapes branch names from Bubble editor
 - Consistent editor tab titles with app name display
 - Dynamic favicons reflecting current editor section (Design 🎨, Workflow 🔄, Data 📊)
+- **IMPROVED in v1.2.0**: Faster branch name detection with real-time URL change monitoring
 
 ### 🎨 **Intelligent Color Management**
 - Reserved colors: Test (blue), Live (green)
@@ -20,8 +22,9 @@ Smart tab organization and management for Bubble.io development workflow.
 - User customizations override all defaults
 
 ### 💾 **Persistent Settings**
-- Remembers group names, colors, and preferences
+- Remembers group names, colors, and preferences  
 - Survives browser restarts and extension updates
+- **ENHANCED in v1.2.0**: Robust recovery from service worker suspension
 
 ### 🌐 **Custom Domain Support**
 - Groups preview tabs on your own domains
@@ -122,8 +125,9 @@ npm run build
 - Check that tabs aren't pinned (pinned tabs are never grouped)
 
 **Color or title changes unexpectedly?**
-- This issue has been resolved in v1.1.0
+- This issue has been resolved in v1.2.0
 - Groups now maintain stable colors and titles during branch switches
+- Enhanced persistence layer prevents data loss after browser idle
 
 **Custom domain not working?**
 - Add `?debug_mode=true` to your URL

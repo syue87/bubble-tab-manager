@@ -1,7 +1,7 @@
-import { logger, LogCategory } from '../lib/logger';
+import { logger, LogCategory, getErrorMessage } from '../lib/logger';
 import { storage } from '../lib/storage';
 import { groupRegistry } from './registry';
-import { groupingEngine } from './grouping';
+import { groupingEngine, isReservedVersion } from './grouping';
 import { TIMING } from '../lib/constants';
 
 interface ScrapeState {
@@ -29,7 +29,7 @@ export class ScrapeCoordinator {
     });
     
     // Skip test/live versions - they use fixed labels
-    if (versionId === 'test' || versionId === 'live') {
+    if (isReservedVersion(versionId)) {
       logger.info(LogCategory.SCRAPE, 'Skipping test/live version', { versionId });
       return;
     }
@@ -148,69 +148,16 @@ export class ScrapeCoordinator {
         await this.updateBranchName(appId, versionId, response.branchName);
       }
     } catch (error) {
-      // Enhanced error logging to avoid [object Object] issue
-      const errorInfo = this.serializeError(error);
-      
-      logger.error(LogCategory.SCRAPE, `Scrape failed: ${errorInfo.message}`, {
+      logger.error(LogCategory.SCRAPE, `Scrape failed: ${getErrorMessage(error)}`, {
         appId, 
         versionId, 
         trigger,
         tabId,
-        ...errorInfo.details
+        error: error instanceof Error ? error.name : typeof error
       });
     }
   }
 
-  /**
-   * Safely serialize error objects for logging
-   */
-  private serializeError(error: unknown): { message: string; details: Record<string, unknown> } {
-    if (error instanceof Error) {
-      return {
-        message: error.message,
-        details: {
-          name: error.name,
-          stack: error.stack,
-          errorType: 'Error'
-        }
-      };
-    }
-    
-    if (typeof error === 'string') {
-      return {
-        message: error,
-        details: { errorType: 'string' }
-      };
-    }
-    
-    if (typeof error === 'object' && error !== null) {
-      try {
-        return {
-          message: JSON.stringify(error),
-          details: {
-            errorType: 'object',
-            constructor: error.constructor?.name || 'Object'
-          }
-        };
-      } catch (jsonError) {
-        return {
-          message: String(error),
-          details: {
-            errorType: 'object',
-            serializationFailed: true
-          }
-        };
-      }
-    }
-    
-    return {
-      message: String(error),
-      details: {
-        errorType: typeof error,
-        primitiveValue: error
-      }
-    };
-  }
 
   /**
    * Select best tab for scraping
@@ -294,8 +241,9 @@ export class ScrapeCoordinator {
       return; // No change
     }
 
-    // Update storage (only 'name', not 'displayName')
+    // Update storage (preserve existing data including color and displayName)
     await storage.setBranch(appId, versionId, {
+      ...(branch || { appId, versionId }),
       name: branchName,
       updatedAt: Date.now()
     });
@@ -316,7 +264,7 @@ export class ScrapeCoordinator {
    */
   async handleNewIdentity(appId: string, versionId: string): Promise<void> {
     // Skip test/live
-    if (versionId === 'test' || versionId === 'live') {
+    if (isReservedVersion(versionId)) {
       return;
     }
 

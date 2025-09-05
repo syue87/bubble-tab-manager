@@ -1,4 +1,5 @@
 import { logger, LogCategory } from './logger';
+import { STORAGE } from './constants';
 
 export interface AppData {
   appId: string;
@@ -260,7 +261,7 @@ class Storage {
 
   /**
    * Add base URL to app's baseUrls list with LRU-like behavior
-   * Respects cap of 12 items and never evicts canonical bubbleapps.io domain
+   * Respects cap of STORAGE.MAX_BASE_URLS items and never evicts canonical bubbleapps.io domain
    */
   async addBaseUrl(appId: string, hostname: string): Promise<void> {
     const app = await this.getApp(appId);
@@ -286,12 +287,12 @@ class Storage {
     // Add new hostname
     baseUrls.push(hostname);
     
-    // Enforce cap of 12, protecting canonical
-    if (baseUrls.length > 12) {
+    // Enforce cap, protecting canonical
+    if (baseUrls.length > STORAGE.MAX_BASE_URLS) {
       // Remove oldest non-canonical entries
       const nonCanonical = baseUrls.filter(url => url !== canonical);
       const canonical_entries = baseUrls.filter(url => url === canonical);
-      const trimmed = [...canonical_entries, ...nonCanonical.slice(-11)];
+      const trimmed = [...canonical_entries, ...nonCanonical.slice(-STORAGE.MAX_KEEPABLE_URLS)];
       await this.setApp(appId, { baseUrls: trimmed });
     } else {
       await this.setApp(appId, { baseUrls });

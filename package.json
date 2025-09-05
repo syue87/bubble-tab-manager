@@ -1,6 +1,6 @@
 {
   "name": "bubble-tab-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Smart tab titles and auto-grouping for Bubble editor and preview tabs",
   "type": "module",
   "scripts": {

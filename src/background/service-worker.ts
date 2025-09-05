@@ -6,6 +6,7 @@ import { groupingEngine } from './grouping';
 import { scrapeCoordinator } from './scrape-coordinator';
 import { lastActiveCache as identityLastActiveCache } from '../lib/last-active-cache';
 import { cleanupManager } from '../lib/cleanup-manager';
+import { TIMING } from '../lib/constants';
 
 let initialized = false;
 
@@ -44,6 +45,10 @@ async function initialize(): Promise<void> {
     
     await storage.initialize();
     await registerMainWorldScript();
+    
+    // Recover group mappings from service worker suspension
+    await groupingEngine.recoverFromSuspension();
+    
     await scanExistingTabs();
     
     const groupingEnabled = await storage.isGroupingEnabled();
@@ -359,8 +364,8 @@ async function isRecognizedCustomDomain(hostname: string): Promise<boolean> {
  */
 function shouldUpdateBranchTimestamp(lastUpdated?: number, isNavigation = false): boolean {
   if (!lastUpdated) return true; // Never updated, should update
-  if (isNavigation) return Date.now() - lastUpdated > 5000; // 5 seconds for navigation events
-  return Date.now() - lastUpdated > 30000; // 30 seconds for other updates
+  if (isNavigation) return Date.now() - lastUpdated > TIMING.BRANCH_UPDATE_NAVIGATION;
+  return Date.now() - lastUpdated > TIMING.BRANCH_UPDATE_GENERAL;
 }
 
 /**
@@ -395,12 +400,12 @@ async function updateBranchStorage(identity: TabIdentity) {
         updatedAt: Date.now()
       });
       
-      // Assign color for new branch
-      await groupingEngine.assignColorForNewBranch(appId, versionId);
+      // Color assignment happens during group creation, not branch creation
     } else if (shouldUpdateBranchTimestamp(branch.updatedAt, true)) {
       // Smart update: allow more frequent updates for navigation events (5s vs 30s)
       // This ensures scraping works on page reloads while preventing race conditions
       await storage.setBranch(appId, versionId, {
+        ...branch,  // Preserve existing data (color, name, displayName, etc.)
         updatedAt: Date.now()
       });
     }
@@ -421,8 +426,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   
   await initialize();
   
-  // Create context menu items
+  // Create context menu items and set up listeners
   await createContextMenus();
+  setupContextMenuListeners();
   
   // Update context menus for the currently active tab
   try {
@@ -468,15 +474,34 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // Parse new identity WITHOUT updating registry yet
         const newIdentity = await parseTabIdentity(url);
         
-        if (oldIdentity && newIdentity && 
-            (oldIdentity.appId !== newIdentity.appId || oldIdentity.versionId !== newIdentity.versionId)) {
-          // Handle identity change FIRST (moves tab physically)
-          await groupingEngine.handleTabIdentityChange(tabId, newIdentity.appId, newIdentity.versionId);
-          // Update registry AFTER physical movement succeeds
-          groupRegistry.setTabIdentity(tabId, tab.windowId, newIdentity, url);
-          // Update storage and trigger scraping for new identity
-          await updateAppStorage(newIdentity);
-          await updateBranchStorage(newIdentity);
+        // Check for identity change (handle null oldIdentity from registry corruption)
+        const hasIdentityChange = newIdentity && (
+          !oldIdentity || 
+          oldIdentity.appId !== newIdentity.appId || 
+          oldIdentity.versionId !== newIdentity.versionId
+        );
+
+        if (hasIdentityChange) {
+          try {
+            // Physical-first approach: move tab first, then update registry
+            await groupingEngine.handleTabIdentityChange(tabId, newIdentity.appId, newIdentity.versionId);
+            
+            // Only update registry after successful physical move
+            groupRegistry.setTabIdentity(tabId, tab.windowId, newIdentity, url);
+            
+            // Update storage after successful move and registry update
+            await updateAppStorage(newIdentity);
+            await updateBranchStorage(newIdentity);
+          } catch (error) {
+            // Physical move failed - do not update registry to maintain consistency
+            logger.error(LogCategory.GROUP, 'Identity change failed, registry not updated', {
+              tabId,
+              newAppId: newIdentity.appId,
+              newVersionId: newIdentity.versionId,
+              error: getErrorMessage(error)
+            });
+            // Continue without registry update
+          }
           
           // Trigger scraping for new editor identities (always true for identity changes)
           if (newIdentity.type === 'editor') {
@@ -531,40 +556,45 @@ chrome.tabs.onRemoved.addListener((tabId, _removeInfo) => {
 /**
  * Handle context menu clicks
  */
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (!tab?.id || !tab.url) return;
-  
-  try {
-    let newUrl: string;
-    
-    switch (info.menuItemId) {
-      case 'toggle-debug-mode':
-        newUrl = toggleUrlParameter(tab.url, 'debug_mode');
-        await chrome.tabs.update(tab.id, { url: newUrl });
-        logger.info(LogCategory.TAB, 'Toggled debug_mode', { 
-          oldUrl: tab.url, 
-          newUrl 
-        });
-        break;
+// Context menu listener will be set up after initialization
+function setupContextMenuListeners() {
+  if (chrome.contextMenus?.onClicked) {
+    chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+      if (!tab?.id || !tab.url) return;
+      
+      try {
+        let newUrl: string;
         
-      case 'toggle-issues-off':
-        newUrl = toggleUrlParameter(tab.url, 'issues_off');
-        await chrome.tabs.update(tab.id, { url: newUrl });
-        logger.info(LogCategory.TAB, 'Toggled issues_off', { 
-          oldUrl: tab.url, 
-          newUrl 
+        switch (info.menuItemId) {
+          case 'toggle-debug-mode':
+            newUrl = toggleUrlParameter(tab.url, 'debug_mode');
+            await chrome.tabs.update(tab.id, { url: newUrl });
+            logger.info(LogCategory.TAB, 'Toggled debug_mode', { 
+              oldUrl: tab.url, 
+              newUrl 
+            });
+            break;
+            
+          case 'toggle-issues-off':
+            newUrl = toggleUrlParameter(tab.url, 'issues_off');
+            await chrome.tabs.update(tab.id, { url: newUrl });
+            logger.info(LogCategory.TAB, 'Toggled issues_off', { 
+              oldUrl: tab.url, 
+              newUrl 
+            });
+            break;
+            
+        }
+      } catch (error) {
+        logger.error(LogCategory.TAB, 'Failed to handle context menu action', {
+          error: String(error),
+          menuItemId: info.menuItemId,
+          url: tab.url
         });
-        break;
-        
-    }
-  } catch (error) {
-    logger.error(LogCategory.TAB, 'Failed to handle context menu action', {
-      error: String(error),
-      menuItemId: info.menuItemId,
-      url: tab.url
+      }
     });
   }
-});
+}
 
 chrome.tabs.onAttached.addListener(async (tabId, attachInfo) => {
   // Get tab info and reprocess identity with new window
@@ -622,12 +652,21 @@ chrome.tabGroups.onRemoved.addListener(async (group) => {
 });
 
 /**
+ * Process tab identity if sender and message are valid
+ */
+async function processTabIfValid(sender: chrome.runtime.MessageSender, messageUrl: string): Promise<boolean> {
+  if (sender.tab?.id && sender.tab?.windowId && messageUrl) {
+    await processTabIdentity(sender.tab.id, sender.tab.windowId, messageUrl);
+    return true;
+  }
+  return false;
+}
+
+/**
  * Handle content script ready event
  */
 async function handleContentScriptReady(message: any, sender: chrome.runtime.MessageSender): Promise<any> {
-  if (sender.tab?.id && sender.tab?.windowId && message.url) {
-    await processTabIdentity(sender.tab.id, sender.tab.windowId, message.url);
-  }
+  await processTabIfValid(sender, message.url);
   return { success: true };
 }
 
@@ -635,8 +674,7 @@ async function handleContentScriptReady(message: any, sender: chrome.runtime.Mes
  * Handle URL change from content script
  */
 async function handleUrlChange(message: any, sender: chrome.runtime.MessageSender): Promise<any> {
-  if (sender.tab?.id && sender.tab?.windowId && message.url) {
-    await processTabIdentity(sender.tab.id, sender.tab.windowId, message.url);
+  if (await processTabIfValid(sender, message.url)) {
     
     // Trigger scraping on URL change for editor tabs
     const identity = parseTabIdentitySync(message.url);
@@ -704,10 +742,15 @@ async function handleScrapeMessage(message: any): Promise<any> {
     case 'IMMEDIATE_SCRAPE_RESULT':
       if (message.appId && message.versionId && message.branchName) {
         try {
-          await storage.setBranch(message.appId, message.versionId, {
+          // Preserve existing branch data (color, displayName, etc.)
+          const existingBranch = await storage.getBranch(message.appId, message.versionId);
+          const freshBranchData = {
+            ...(existingBranch || { appId: message.appId, versionId: message.versionId }),
             name: message.branchName,
             updatedAt: Date.now()
-          });
+          };
+          
+          await storage.setBranch(message.appId, message.versionId, freshBranchData);
           
           logger.info(LogCategory.SCRAPE, 'Immediate scrape result stored', {
             appId: message.appId,
@@ -715,7 +758,8 @@ async function handleScrapeMessage(message: any): Promise<any> {
             branchName: message.branchName
           });
           
-          await groupingEngine.refreshTitlesForIdentity(message.appId, message.versionId);
+          // Pass fresh branch data directly to prevent timing issues with storage/registry
+          await groupingEngine.refreshTitlesForIdentity(message.appId, message.versionId, undefined, freshBranchData);
           return { success: true };
         } catch (error) {
           logger.error(LogCategory.SCRAPE, 'Failed to process immediate scrape result', { 
@@ -858,13 +902,15 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       case 'BRANCH_GROUP_COLOR':
         try {
           if (message.appId && message.version && message.groupColor) {
-            // Store color for identity
-            await storage.setBranch(message.appId, message.version, { 
-              color: message.groupColor 
+            // Preserve existing branch data (name, displayName, etc.)
+            const existingBranch = await storage.getBranch(message.appId, message.version);
+            await storage.setBranch(message.appId, message.version, {
+              ...(existingBranch || { appId: message.appId, versionId: message.version }),
+              color: message.groupColor,
+              updatedAt: Date.now()
             });
             
-            // Apply to existing groups with this identity
-            await groupingEngine.refreshTitlesForIdentity(message.appId, message.version);
+            // No need to refresh titles after color change - color is already updated
             response = { success: true };
           } else {
             response = { success: false, error: 'Missing appId, version, or groupColor' };

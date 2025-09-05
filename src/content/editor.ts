@@ -2,6 +2,7 @@ import { parseAndComputeTitle } from '../lib/url-parser';
 import { attemptWithRetries, setupVisibilityListener, debugPageStructure } from './scraper';
 import { logger, LogCategory } from '../lib/logger';
 import { parseTabIdentitySync, isEditorUrl, isPreviewUrl } from '../lib/identity';
+import { TIMING } from '../lib/constants';
 
 
 interface CachedIconData {
@@ -78,7 +79,7 @@ async function getChromeGroupColorForCurrentBranch(): Promise<string | null> {
     const response = await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error('Message timeout after 2 seconds'));
-      }, 2000);
+      }, TIMING.MESSAGE_TIMEOUT);
       
       chrome.runtime.sendMessage({
         type: 'GET_BRANCH_DATA',
@@ -118,7 +119,7 @@ async function notifyServiceWorkerGroupColor(color?: string): Promise<void> {
     
     // Add delay to ensure service worker has processed the tab first
     if (!color) {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+      await new Promise(resolve => setTimeout(resolve, TIMING.GROUP_COLOR_DELAY));
     }
     
     const groupColor = color || await getChromeGroupColorForCurrentBranch();
@@ -538,12 +539,10 @@ class TitleManager {
 
 
     // Log initialization with build info
-    if (this.devLogging) {
-      console.log('[BTM:Content] Editor content script initialized', {
-        url: window.location.href,
-        buildInfo: BUILD_INFO
-      });
-    }
+    logger.info(LogCategory.CONTENT, 'Editor content script initialized', {
+      url: window.location.href,
+      buildInfo: BUILD_INFO
+    });
     
     // Set up event listeners for navigation detection
     this.setupNavigationListeners();
@@ -570,7 +569,7 @@ class TitleManager {
     // Trigger immediate scraping and group update
     setTimeout(() => {
       this.triggerImmediateUpdate();
-    }, 2000);
+    }, TIMING.IMMEDIATE_UPDATE_DELAY);
 
     // Setup visibility listener for scraping trigger
     setupVisibilityListener(() => {
@@ -698,9 +697,7 @@ class TitleManager {
   }
 
   private log(message: string, data?: any) {
-    if (this.devLogging) {
-      console.log(`[BTM:Content] ${message}`, data || '');
-    }
+    logger.debug(LogCategory.CONTENT, message, data);
   }
 
   private async onUrlChange(trigger: string) {
@@ -714,6 +711,13 @@ class TitleManager {
       this.currentUrl = newUrl;
       
       this.updateTitle(true);
+      
+      // Notify service worker of URL change to trigger scraping
+      this.sendMessage({
+        type: 'URL_CHANGED',
+        url: newUrl,
+        trigger: trigger
+      });
       
       // Notify service worker of Chrome group color for new branch
       notifyServiceWorkerGroupColor();
@@ -894,9 +898,7 @@ class TitleManager {
       await chrome.runtime.sendMessage(message);
     } catch (error) {
       // Service worker might not be ready yet
-      if (this.devLogging) {
-        console.debug('[BTM:Content] Failed to send message', { message, error });
-      }
+      logger.debug(LogCategory.CONTENT, 'Failed to send message', { message, error });
     }
   }
 

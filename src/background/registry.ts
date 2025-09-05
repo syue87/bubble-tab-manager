@@ -1,7 +1,7 @@
 import { logger, LogCategory } from '../lib/logger';
 import { TabIdentity } from '../lib/identity';
 import { cleanupManager } from '../lib/cleanup-manager';
-import { TIMING } from '../lib/constants';
+import { TIMING, CACHE } from '../lib/constants';
 
 export interface RegistryEntry {
   tabId: number;
@@ -197,7 +197,13 @@ export class GroupRegistry {
    * Dump registry contents for debugging
    */
   dumpRegistry(): void {
-    // Safe no-op in production
+    const stats = this.getStats();
+    logger.debug(LogCategory.TAB, 'Registry contents', {
+      totalTabs: this.tabIndex.size,
+      totalApps: stats.totalApps,
+      stats,
+      tabEntries: Array.from(this.tabIndex.entries()).slice(0, 10) // Sample first 10
+    });
   }
 
   /**
@@ -287,7 +293,7 @@ export class LastActiveCache {
     
     for (const [versionId, entry] of this.cache) {
       const ageMinutes = (now - entry.timestamp) / (60 * 1000);
-      if (ageMinutes <= 30) { // Only non-expired entries
+      if (ageMinutes <= CACHE.LAST_ACTIVE_DISPLAY_MINUTES) { // Only non-expired entries
         result[versionId] = {
           appId: entry.appId,
           ageMinutes: Math.round(ageMinutes * 10) / 10 // Round to 1 decimal

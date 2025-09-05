@@ -39,12 +39,12 @@ export function parseEditorIdentity(url: string): EditorIdentity | null {
     // Extract parameters
     const params = urlObj.searchParams;
     const appId = params.get('id');
-    const versionId = params.get('version') || 'test'; // Default to test
+    const versionId = params.get('version');
     const tab = params.get('tab') || 'Design';
     const name = params.get('name') || undefined;
     
-    if (!appId) {
-      return null; // Must have appId
+    if (!appId || !versionId) {
+      return null; // Must have both appId and versionId
     }
     
     return {

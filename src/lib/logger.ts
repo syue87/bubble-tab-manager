@@ -11,8 +11,7 @@ interface LogEntry {
 }
 
 class Logger {
-  private enabled = process.env.NODE_ENV === 'development'; // Environment-dependent
-  private isDev = process.env.NODE_ENV === 'development'; // Environment-dependent  
+  private enabled = process.env.NODE_ENV === 'development';
   private buffer: LogEntry[] = [];
   private maxBufferSize = 100;
 
@@ -23,7 +22,7 @@ class Logger {
   private async init() {
     // Check if logging is enabled in storage
     const { devLogging } = await chrome.storage.local.get('devLogging');
-    this.enabled = devLogging === true || this.isDev;
+    this.enabled = devLogging === true || process.env.NODE_ENV === 'development';
   }
 
   private log(level: LogEntry['level'], category: string, message: string, data?: unknown) {
@@ -38,7 +37,7 @@ class Logger {
     };
 
     // Console output in dev
-    if (this.isDev) {
+    if (process.env.NODE_ENV === 'development') {
       const prefix = `[BTM:${category}]`;
       const logFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
       logFn(prefix, message, data !== undefined ? data : '');

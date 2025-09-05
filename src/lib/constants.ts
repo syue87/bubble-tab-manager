@@ -4,4 +4,36 @@ export const TIMING = {
   CACHE_REFRESH: 5 * 60 * 1000,
   LAST_ACTIVE_TTL: 30 * 60 * 1000,
   CLEANUP_INTERVAL: 5 * 60 * 1000,
+  // Branch update throttling
+  BRANCH_UPDATE_NAVIGATION: 5000,
+  BRANCH_UPDATE_GENERAL: 30000,
+  // Content script delays
+  MESSAGE_TIMEOUT: 2000,
+  GROUP_COLOR_DELAY: 1000,
+  IMMEDIATE_UPDATE_DELAY: 2000,
+  URL_POLLING_INTERVAL: 1000,
+  POLLING_TIMEOUT: 30000,
+  CACHE_RETRY_DELAY: 1000,
+} as const;
+
+export const VERSION_ID = {
+  MAX_DISPLAY_LENGTH: 20,
+  CLEANUP_TIMEOUT: 1000,
+  DEBOUNCE_DELAY: 200
+} as const;
+
+export const STORAGE = {
+  MAX_BASE_URLS: 12,
+  MAX_KEEPABLE_URLS: 11
+} as const;
+
+export const CACHE = {
+  SCRAPER_TTL: 5000, // 5 seconds
+  CONFIDENT_MAPPING_TTL: 60 * 60 * 1000, // 1 hour
+  LAST_ACTIVE_DISPLAY_MINUTES: 30
+} as const;
+
+export const FAVICON = {
+  SIZE: 32,
+  DEFAULT_FILL_COLOR: '#333333'
 } as const;

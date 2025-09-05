@@ -1,7 +1,4 @@
-interface ScrapeResult {
-  branchName: string | null;
-  timestamp: number;
-}
+import { CACHE } from '../lib/constants';
 
 interface ScrapeOptions {
   maxAttempts?: number;
@@ -12,7 +9,6 @@ interface ScrapeOptions {
 // Cache DOM queries for performance
 let cachedContainers: Element[] | null = null;
 let cacheTimestamp = 0;
-const CACHE_TTL = 5000; // 5 seconds
 
 
 /**
@@ -20,7 +16,7 @@ const CACHE_TTL = 5000; // 5 seconds
  */
 function getCachedContainers(): Element[] {
   const now = Date.now();
-  if (cachedContainers && (now - cacheTimestamp) < CACHE_TTL) {
+  if (cachedContainers && (now - cacheTimestamp) < CACHE.SCRAPER_TTL) {
     return cachedContainers;
   }
   
@@ -152,7 +148,6 @@ async function scrapeWithBudget(timeBudgetMs: number): Promise<string | null> {
  */
 function tryPrimarySelector(): string | null {
   let dropdown = null;
-  let usedSelector = null;
   
   // Try global search first - this is more reliable
   const specificSelectors = [
@@ -171,7 +166,6 @@ function tryPrimarySelector(): string | null {
         const text = elem.textContent?.trim();
         if (text && text.includes('/') && text.length < 200) {
           dropdown = elem;
-          usedSelector = selector;
           break;
         }
       }
@@ -210,7 +204,6 @@ function tryPrimarySelector(): string | null {
           
           if (text && text.includes('/') && text.length < 200) {
             dropdown = elem;
-            usedSelector = selector;
             break;
           }
         }
@@ -238,7 +231,6 @@ function tryPrimarySelector(): string | null {
             const text = elem.textContent?.trim();
             if (text && text.includes('/') && text.length < 100) {
               dropdown = elem;
-              usedSelector = selector;
               break;
             }
           }

@@ -4,6 +4,8 @@
  */
 
 import { logger, LogCategory } from './logger';
+import { isReservedVersion } from '../background/grouping';
+import { CACHE } from './constants';
 
 interface CacheEntry {
   appId: string;
@@ -23,7 +25,7 @@ export class LastActiveCache {
    */
   recordActivity(appId: string, versionId: string): void {
     // Skip test/live as they're not useful for custom domain mapping
-    if (versionId === 'test' || versionId === 'live') {
+    if (isReservedVersion(versionId)) {
       return;
     }
 
@@ -71,7 +73,7 @@ export class LastActiveCache {
     if (!entry) return false;
 
     const ageMs = Date.now() - entry.timestamp;
-    const isRecent = ageMs < (60 * 60 * 1000); // 1 hour
+    const isRecent = ageMs < CACHE.CONFIDENT_MAPPING_TTL;
     
     return isRecent;
   }

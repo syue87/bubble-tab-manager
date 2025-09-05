@@ -4,6 +4,7 @@
  */
 
 import { logger, LogCategory } from './logger';
+import { FAVICON } from './constants';
 
 // Cache the current favicon to prevent unnecessary updates
 let currentFaviconSvg: string | null = null;
@@ -38,15 +39,15 @@ function extractSelectedTabSvg(): { svg: string; tabName: string } | null {
     const clonedSvg = svgElement.cloneNode(true) as SVGElement;
     
     // Ensure the SVG has proper attributes for favicon use
-    clonedSvg.setAttribute('width', '32');
-    clonedSvg.setAttribute('height', '32');
-    clonedSvg.setAttribute('viewBox', '0 0 32 32');
+    clonedSvg.setAttribute('width', FAVICON.SIZE.toString());
+    clonedSvg.setAttribute('height', FAVICON.SIZE.toString());
+    clonedSvg.setAttribute('viewBox', `0 0 ${FAVICON.SIZE} ${FAVICON.SIZE}`);
     
     // Make sure the icon is visible by setting fill if needed
     const paths = clonedSvg.querySelectorAll('path');
     paths.forEach(path => {
       if (!path.getAttribute('fill') || path.getAttribute('fill') === 'currentColor') {
-        path.setAttribute('fill', '#333333'); // Dark color for visibility
+        path.setAttribute('fill', FAVICON.DEFAULT_FILL_COLOR); // Dark color for visibility
       }
     });
     
